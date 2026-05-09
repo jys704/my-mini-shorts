@@ -1,7 +1,0 @@
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_01.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_02.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_03.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_04.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_05.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_06.mp4'
-file 'C:\Users\szylo\OneDrive\Desktop\my-mini-shorts\shorts_data\storage\9d515fd9-65ed-4be0-8d79-633778eea78b\video\scene_07.mp4'
