@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run mini_shorts_mvp",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/mini_shorts_mvp.py",
+      "console": "integratedTerminal"
+    }
+  ]
+}

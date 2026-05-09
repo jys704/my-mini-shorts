@@ -1,0 +1,23 @@
+{
+  "root": "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55",
+  "video_assets": [
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\video\\scene_1.txt",
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\video\\scene_2.txt",
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\video\\scene_3.txt"
+  ],
+  "audio_assets": [
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\audio\\scene_1.txt",
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\audio\\scene_2.txt",
+    "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\audio\\scene_3.txt"
+  ],
+  "subtitle": "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\subtitle\\captions.vtt",
+  "thumbnail": "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\thumbnail.txt",
+  "final_video": "C:\\Users\\szylo\\OneDrive\\Desktop\\my-mini-shorts\\mini_shorts_data\\storage\\38ecdd79-3a1f-438c-86ad-254d85a7eb55\\final_short.mp4",
+  "final_video_ready": true,
+  "youtube": {
+    "status": "pending",
+    "video_id": null,
+    "url": null
+  },
+  "video_render_mode": "ffmpeg_test_mp4"
+}
