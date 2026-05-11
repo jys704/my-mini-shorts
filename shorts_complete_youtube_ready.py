@@ -1,6 +1,6 @@
 """
 AI Shorts Automation - Complete MVP
-Run: python shorts_complete.py
+Run: python shorts_complete_youtube_ready.py
 Dashboard: http://localhost:8000
 API Docs: http://localhost:8000/docs
 """
@@ -12,6 +12,8 @@ from typing import Optional, List
 
 def load_env_file(env_path: str = ".env"):
     path = Path(env_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -33,11 +35,20 @@ from pydantic import BaseModel
 import uvicorn
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-BASE_DIR   = Path("shorts_data")
+APP_ROOT   = Path(__file__).resolve().parent
+BASE_DIR   = APP_ROOT / "shorts_data"
 DB_PATH    = BASE_DIR / "app.db"
 STORAGE    = BASE_DIR / "storage"
+ASSETS_DIR = BASE_DIR / "assets"
+VIDEO_ASSET_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+IMAGE_ASSET_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+SUPPORTED_ASSET_EXTS = VIDEO_ASSET_EXTS | IMAGE_ASSET_EXTS
+DEFAULT_TRANSITION = "fade"
+TRANSITION_DURATION = 0.4
+SUPPORTED_TRANSITIONS = {"fade", "wipeleft", "wiperight", "slideleft", "slideright"}
 BASE_DIR.mkdir(exist_ok=True)
 STORAGE.mkdir(exist_ok=True)
+ASSETS_DIR.mkdir(exist_ok=True)
 
 # API keys (set in env or .env file)
 OPENAI_KEY      = os.getenv("OPENAI_API_KEY", "")
@@ -168,10 +179,37 @@ def build_script(topic: str, duration: int, lang: str) -> str:
     return "\n".join(lines)
 
 # ─── Scene Planner ────────────────────────────────────────────────────────────
-def split_scenes(script: str, duration: int) -> list:
+def split_script_lines(script: str) -> list:
     lines = [l.strip() for l in script.split("\n") if l.strip()]
-    if not lines:
-        lines = ["테스트 영상입니다."]
+    if len(lines) <= 1:
+        sentence_marks = [". ", "! ", "? ", "。", "！", "？"]
+        normalized = script.strip()
+        for mark in sentence_marks:
+            normalized = normalized.replace(mark, mark.strip() + "\n")
+        lines = [l.strip() for l in normalized.split("\n") if l.strip()]
+    return lines or ["테스트 영상입니다."]
+
+
+def extract_scene_keywords(text: str, limit: int = 5) -> list:
+    stopwords = {
+        "그리고", "하지만", "그러나", "입니다", "합니다", "있습니다",
+        "about", "with", "that", "this", "your", "from", "the", "and"
+    }
+    cleaned = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text)
+    keywords = []
+    for word in cleaned.split():
+        normalized = word.strip()
+        if len(normalized) < 2 or normalized.lower() in stopwords:
+            continue
+        if normalized not in keywords:
+            keywords.append(normalized)
+        if len(keywords) >= limit:
+            break
+    return keywords
+
+
+def split_scenes(script: str, duration: int) -> list:
+    lines = split_script_lines(script)
 
     # 장면 수가 너무 많으면 목표 길이를 초과하므로 축소
     max_scenes = max(1, min(len(lines), duration))
@@ -180,19 +218,121 @@ def split_scenes(script: str, duration: int) -> list:
     scenes = []
     base = duration // len(lines)
     remainder = duration % len(lines)
+    cursor = 0
 
     for i, line in enumerate(lines):
-        scene_duration = base + (1 if i < remainder else 0)
+        scene_duration = max(1, base + (1 if i < remainder else 0))
+        start = cursor
+        end = start + scene_duration
         scenes.append({
             "scene": i + 1,
+            "text": line,
+            "start": start,
+            "end": end,
+            "keywords": extract_scene_keywords(line),
+            "asset_path": None,
+            "transition": "none" if i == 0 else DEFAULT_TRANSITION,
+            # 기존 렌더링 호환 필드: build_video에서 계속 사용
             "voice_line": line,
             "visual_prompt": f"신비롭고 역동적인 배경, 텍스트: '{line[:20]}...'",
-            "duration": max(1, scene_duration)
+            "duration": scene_duration
         })
+        cursor = end
     return scenes
 
+
+def scene_plan_to_json(scenes: list) -> str:
+    return json.dumps(scenes, ensure_ascii=False, indent=2)
+
+
+def save_scene_plan(job_id: str, scenes: list) -> Optional[Path]:
+    job_dir = STORAGE / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    scene_plan_path = job_dir / "scene_plan.json"
+    scene_plan_path.write_text(scene_plan_to_json(scenes), encoding="utf-8")
+    return scene_plan_path
+
+
+def persist_scene_plan(job_id: str, scenes: list, current_step: Optional[str] = None) -> Optional[Path]:
+    scene_plan_path = None
+    try:
+        scene_plan_path = save_scene_plan(job_id, scenes)
+    except Exception as e:
+        print(f"scene_plan.json 저장 실패, DB에는 scene_plan 유지: {e}")
+
+    update_data = {"scene_plan": scene_plan_to_json(scenes)}
+    if current_step:
+        update_data["current_step"] = current_step
+    db_update(job_id, **update_data)
+    return scene_plan_path
+
+
+def find_asset_files(asset_dir: Path = ASSETS_DIR) -> list:
+    asset_dir = Path(asset_dir)
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    return sorted(
+        path.resolve() for path in asset_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_ASSET_EXTS
+    )
+
+
+def score_asset_for_scene(asset_path: Path, scene: dict) -> int:
+    searchable = f"{asset_path.stem} {asset_path.parent.name}".lower()
+    score = 0
+    for keyword in scene.get("keywords") or []:
+        normalized = str(keyword).lower()
+        if normalized and normalized in searchable:
+            score += 2
+    text = str(scene.get("text") or scene.get("voice_line") or "").lower()
+    for token in searchable.replace("_", " ").replace("-", " ").split():
+        if len(token) >= 2 and token in text:
+            score += 1
+    return score
+
+
+def select_assets_for_scenes(scenes: list, asset_dir: Path = ASSETS_DIR, assets: Optional[list] = None) -> list:
+    asset_dir = Path(asset_dir)
+    assets = find_asset_files(asset_dir) if assets is None else list(assets)
+    asset_count = len(assets)
+    if not assets:
+        for scene in scenes:
+            scene["asset_path"] = None
+            scene["asset_score"] = 0
+            scene["asset_status"] = "no_assets_found"
+        return scenes
+
+    for index, scene in enumerate(scenes):
+        scored_assets = [
+            (score_asset_for_scene(asset, scene), asset_index, asset)
+            for asset_index, asset in enumerate(assets)
+        ]
+        best_score, _, best_asset = max(scored_assets, key=lambda item: (item[0], -item[1]))
+        if best_score == 0:
+            best_asset = assets[index % asset_count]
+        scene["asset_path"] = str(best_asset)
+        scene["asset_score"] = best_score
+        scene["asset_status"] = "matched" if best_score > 0 else "round_robin"
+    return scenes
+
+
+def prepare_scene_plan_for_job(job_id: str, script: str, duration: int) -> tuple:
+    scenes = split_scenes(script, duration)
+    asset_files = []
+    try:
+        asset_files = find_asset_files(ASSETS_DIR)
+        select_assets_for_scenes(scenes, ASSETS_DIR, asset_files)
+    except Exception as e:
+        print(f"asset 자동 선택 실패, scene_plan.json은 fallback 상태로 저장: {e}")
+        for scene in scenes:
+            scene.setdefault("asset_path", None)
+            scene.setdefault("asset_score", 0)
+            scene["asset_status"] = "asset_select_failed"
+
+    scene_plan_path = persist_scene_plan(job_id, scenes, current_step="rendering")
+    return scenes, asset_files, scene_plan_path
+
 # ─── TTS (ElevenLabs or silent) ───────────────────────────────────────────────
-def synthesize_voice(text: str, out_path: Path) -> bool:
+def synthesize_voice(text: str, out_path: Path, fallback_duration: float = 3.0) -> bool:
     if ELEVENLABS_KEY:
         try:
             import httpx
@@ -208,12 +348,60 @@ def synthesize_voice(text: str, out_path: Path) -> bool:
                 return True
         except Exception:
             pass
-    # 무음 오디오 생성 (ffmpeg)
+
+    # 무음 오디오 생성 (ffmpeg): 실제 scene 길이를 사용해 기존 렌더링 fallback 유지
+    safe_duration = max(1.0, float(fallback_duration or 3.0))
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono",
-        "-t", "3", str(out_path)
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+        "-t", f"{safe_duration:.2f}", str(out_path)
     ], capture_output=True)
     return False
+
+
+def probe_media_duration(media_path: Path) -> Optional[float]:
+    if not media_path.exists():
+        return None
+    try:
+        ret = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(media_path)
+        ], capture_output=True, text=True)
+        if ret.returncode != 0:
+            return None
+        duration = float((ret.stdout or "").strip())
+        if duration > 0:
+            return duration
+    except Exception:
+        return None
+    return None
+
+
+def sync_scene_duration_from_audio(scene: dict, audio_file: Path, fallback_duration: float) -> float:
+    audio_duration = probe_media_duration(audio_file)
+    if audio_duration:
+        synced_duration = max(1.0, round(audio_duration, 2))
+        scene["audio_duration"] = synced_duration
+        scene["audio_sync"] = "ffprobe"
+    else:
+        synced_duration = max(1.0, float(fallback_duration or scene.get("duration") or 1))
+        scene["audio_duration"] = None
+        scene["audio_sync"] = "fallback"
+
+    scene["duration"] = synced_duration
+    scene["end"] = round(float(scene.get("start", 0)) + synced_duration, 2)
+    return synced_duration
+
+
+def recalculate_scene_timing(scenes: list) -> list:
+    cursor = 0.0
+    for scene in scenes:
+        duration = max(1.0, float(scene.get("duration") or 1))
+        scene["start"] = round(cursor, 2)
+        cursor += duration
+        scene["end"] = round(cursor, 2)
+    return scenes
 
 # ─── FFmpeg Video Builder ─────────────────────────────────────────────────────
 def get_korean_font_path() -> str:
@@ -238,6 +426,106 @@ def get_korean_font_path() -> str:
     return ""
 
 
+def normalize_transition(value: str) -> Optional[str]:
+    transition = str(value or "none").strip().lower()
+    if transition in SUPPORTED_TRANSITIONS:
+        return transition
+    return None
+
+
+def render_broll_scene(asset_path: str, audio_file: Path, scene_vid: Path, dur: int, drawtext_filter: str) -> bool:
+    asset = Path(asset_path) if asset_path else None
+    if not asset or not asset.exists() or asset.suffix.lower() not in SUPPORTED_ASSET_EXTS:
+        return False
+
+    media_filter = (
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,setsar=1,"
+        f"{drawtext_filter}[v]"
+    )
+    input_args = ["-stream_loop", "-1", "-i", str(asset)]
+    if asset.suffix.lower() in IMAGE_ASSET_EXTS:
+        input_args = ["-loop", "1", "-i", str(asset)]
+
+    ret = subprocess.run([
+        "ffmpeg", "-y",
+        *input_args,
+        "-i", str(audio_file),
+        "-filter_complex", media_filter,
+        "-map", "[v]", "-map", "1:a",
+        "-t", str(dur),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-shortest",
+        str(scene_vid)
+    ], capture_output=True, text=True)
+
+    if ret.returncode != 0 and scene_vid.exists():
+        scene_vid.unlink(missing_ok=True)
+    return ret.returncode == 0 and scene_vid.exists()
+
+
+def build_transition_video(job_dir: Path, scene_files: list, scenes: list) -> Optional[Path]:
+    if len(scene_files) < 2:
+        return None
+
+    transitions = [normalize_transition(scene.get("transition")) for scene in scenes[1:len(scene_files)]]
+    if not any(transitions):
+        return None
+
+    filter_parts = []
+    for i in range(len(scene_files)):
+        filter_parts.append(
+            f"[{i}:v]fps=30,scale=1080:1920,format=yuv420p,setpts=PTS-STARTPTS[v{i}]"
+        )
+        filter_parts.append(f"[{i}:a]asetpts=PTS-STARTPTS[a{i}]")
+
+    previous_video = "v0"
+    current_end = float(scenes[0].get("duration") or 1)
+    rendered_transition_count = 0
+    for i in range(1, len(scene_files)):
+        transition = transitions[i - 1]
+        scene_duration = float(scenes[i].get("duration") or 1)
+        if not transition:
+            return None
+        transition_duration = min(TRANSITION_DURATION, current_end / 2, scene_duration / 2)
+        offset = max(0, current_end - transition_duration)
+        output_label = f"vx{i}"
+        filter_parts.append(
+            f"[{previous_video}][v{i}]xfade=transition={transition}:"
+            f"duration={transition_duration:.2f}:offset={offset:.2f}[{output_label}]"
+        )
+        previous_video = output_label
+        current_end = current_end + scene_duration - transition_duration
+        rendered_transition_count += 1
+
+    audio_inputs = "".join(f"[a{i}]" for i in range(len(scene_files)))
+    filter_parts.append(f"{audio_inputs}concat=n={len(scene_files)}:v=0:a=1[aout]")
+
+    final = job_dir / "final_short.mp4"
+    input_args = []
+    for scene_file in scene_files:
+        input_args.extend(["-i", str(scene_file)])
+
+    ret = subprocess.run([
+        "ffmpeg", "-y",
+        *input_args,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", f"[{previous_video}]", "-map", "[aout]",
+        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
+        "-shortest",
+        str(final)
+    ], capture_output=True, text=True)
+
+    if ret.returncode != 0:
+        if final.exists():
+            final.unlink(missing_ok=True)
+        return None
+
+    for scene in scenes[1:1 + rendered_transition_count]:
+        scene["transition_rendered"] = True
+    return final if final.exists() else None
+
+
 def build_video(job_id: str, scenes: list, script: str) -> Optional[Path]:
     job_dir = STORAGE / job_id
     video_dir = job_dir / "video"
@@ -250,17 +538,18 @@ def build_video(job_id: str, scenes: list, script: str) -> Optional[Path]:
 
     for scene in scenes:
         idx = scene["scene"]
-        dur = scene["duration"]
+        fallback_dur = float(scene.get("duration") or 1)
         text = scene["voice_line"]
         # 텍스트 줄바꿈 (25자)
         wrapped = "\n".join(textwrap.wrap(text, 22))
         scene_vid = video_dir / f"scene_{idx:02d}.mp4"
         audio_file = audio_dir / f"scene_{idx:02d}.mp3"
 
-        # TTS 생성
-        synthesize_voice(text, audio_file)
+        # TTS 생성 후 실제 오디오 길이 기준으로 scene duration 동기화
+        synthesize_voice(text, audio_file, fallback_dur)
+        dur = sync_scene_duration_from_audio(scene, audio_file, fallback_dur)
 
-        # FFmpeg: 배경 + 텍스트 오버레이
+        # FFmpeg: B-roll(asset_path) 배경 + 텍스트 오버레이, 실패 시 기존 컬러 배경 유지
         escaped = wrapped.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:").replace("%", "\\%").replace("\n", "\\n")
         bg_color = ["0x1a1a2e", "0x16213e", "0x0f3460", "0x533483"][idx % 4]
         font_expr = ""
@@ -268,22 +557,29 @@ def build_video(job_id: str, scenes: list, script: str) -> Optional[Path]:
             ff_font = font_path.replace("\\", "/").replace(":", "\\:")
             font_expr = f"fontfile='{ff_font}':"
 
-        ret = subprocess.run([
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", f"color=c={bg_color}:size=1080x1920:rate=30",
-            "-i", str(audio_file),
-            "-vf",
+        drawtext_filter = (
             f"drawtext={font_expr}text='{escaped}':fontcolor=white:fontsize=52:"
             f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10:"
-            f"borderw=3:bordercolor=black@0.8:box=1:boxcolor=black@0.25:boxborderw=20",
-            "-t", str(dur),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-            "-shortest",
-            str(scene_vid)
-        ], capture_output=True, text=True)
+            f"borderw=3:bordercolor=black@0.8:box=1:boxcolor=black@0.25:boxborderw=20"
+        )
+        ret = None
+        broll_rendered = render_broll_scene(scene.get("asset_path"), audio_file, scene_vid, dur, drawtext_filter)
+        scene["broll_rendered"] = broll_rendered
 
-        if ret.returncode != 0:
+        if not broll_rendered:
+            ret = subprocess.run([
+                "ffmpeg", "-y",
+                "-f", "lavfi",
+                "-i", f"color=c={bg_color}:size=1080x1920:rate=30",
+                "-i", str(audio_file),
+                "-vf", drawtext_filter,
+                "-t", str(dur),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest",
+                str(scene_vid)
+            ], capture_output=True, text=True)
+
+        if ret is not None and ret.returncode != 0:
             # 오디오 없이 재시도
             subprocess.run([
                 "ffmpeg", "-y",
@@ -301,6 +597,12 @@ def build_video(job_id: str, scenes: list, script: str) -> Optional[Path]:
 
     if not scene_files:
         return None
+
+    recalculate_scene_timing(scenes)
+
+    transition_final = build_transition_video(job_dir, scene_files, scenes)
+    if transition_final:
+        return transition_final
 
     # concat
     concat_list = job_dir / "concat.txt"
@@ -424,15 +726,30 @@ def run_pipeline(job_id: str, topic: str, channel: str, lang: str, duration: int
         script = build_script(topic, duration, lang)
         db_update(job_id, script_text=script, current_step="scene_split")
 
-        scenes = split_scenes(script, duration)
-        db_update(job_id, scene_plan=json.dumps(scenes, ensure_ascii=False), current_step="rendering")
+        db_update(job_id, current_step="asset_select")
+        scenes, asset_files, scene_plan_path = prepare_scene_plan_for_job(job_id, script, duration)
 
         final_vid = build_video(job_id, scenes, script)
+        scene_plan_path = persist_scene_plan(job_id, scenes) or scene_plan_path
+        selected_assets = [scene.get("asset_path") for scene in scenes if scene.get("asset_path")]
+        broll_scene_count = sum(1 for scene in scenes if scene.get("broll_rendered"))
+        transition_scene_count = sum(1 for scene in scenes if scene.get("transition_rendered"))
+        audio_synced_count = sum(1 for scene in scenes if scene.get("audio_sync") == "ffprobe")
         manifest = {
             "job_id": job_id,
             "final_video": str(final_vid) if final_vid else None,
             "final_video_ready": final_vid is not None and final_vid.exists(),
             "scenes": len(scenes),
+            "scene_plan_path": str(scene_plan_path) if scene_plan_path else str(STORAGE / job_id / "scene_plan.json"),
+            "assets_dir": str(ASSETS_DIR),
+            "asset_scan_count": len(asset_files),
+            "asset_scan_files": [str(asset) for asset in asset_files],
+            "selected_assets": selected_assets,
+            "selected_asset_count": len(selected_assets),
+            "broll_scene_count": broll_scene_count,
+            "transition_scene_count": transition_scene_count,
+            "audio_synced_count": audio_synced_count,
+            "total_synced_duration": scenes[-1].get("end") if scenes else 0,
             "youtube": {"status": "pending"}
         }
         db_update(job_id, asset_manifest=json.dumps(manifest, ensure_ascii=False),
